@@ -30,6 +30,8 @@
 (eval-when-compile
   (require 'cl-lib))
 
+(require 'map)
+
 ;;;; Variables
 
 
@@ -43,6 +45,51 @@
 
 (defalias 'tp-get 'get-text-property)
 
+(defun tp-put (start end property value &optional object)
+  "Like `put-text-property', but enhanced for strings.
+If OBJECT is a string and END is nil, apply to entire string."
+  (pcase object
+    ((or 'nil (pred bufferp)) (put-text-property start end property value))
+    (_ (put-text-property start (or end (length object)) property value object))))
+
+(cl-defun tp-values (&optional property &key limit non-nil object (start (point)))
+  "Return all values of text properties in OBJECT or current buffer, up to LIMIT.
+If PROPERTY, only return that property's values.  If NON-NIL,
+only return non-nil values.  Search from START or point."
+  (let (results)
+    (when-let* ((value (tp-get start property object)))
+      (push value results))
+    (cl-loop with pos = start
+             do (setf pos (tp-next property :limit limit :non-nil non-nil :object object :start pos))
+             when pos
+             for value-at = (tp-get pos property object)
+             when value-at
+             do (push value-at results)
+             while pos)
+    (nreverse results)))
+
+;;;;; Searching
+
+(defun tp-positions (&rest args)
+  "Return all positions of PROPERTY, optionally with VALUE, up to LIMIT.
+If NON-NIL, require that the value be any non-nil value.  Search
+forward from START or current point, in OBJECT or current buffer.
+If VALUE, compare with TESTFN.  Position returned is immediately
+before PROPERTY has the desired value."
+  (declare (advertised-calling-convention
+            (&optional property &key limit value non-nil object
+                       (start (point)) (testfn #'eq))
+            nil))
+  ;; NOTE: If OBJECT is a string, saving and moving point is
+  ;; unnecessary.  Maybe avoid that.
+  (save-excursion
+    (cl-loop with pos = (or (plist-get args :start) (point))
+             with property = (pop args)
+             with rest = (map-delete args :start)
+             do (setf pos (apply #'tp-next property :start pos rest))
+             while pos
+             collect pos)))
+
 (cl-defun tp-next (&optional property &key limit value non-nil object
                              (start (point)) (testfn #'eq))
   "Return position of next change in PROPERTY, optionally with VALUE, up to LIMIT.
@@ -54,9 +101,9 @@ return the specified VALUE:
 
   (tp-get (tp-next ...) PROPERTY OBJECT)"
   (pcase property
-    ('nil  ;; Any property change.
+    ('nil ;; Any property change.
      (next-property-change start object limit))
-    (_   ;; Specific property.
+    (_ ;; Specific property.
      (pcase value
        ('nil ;; No specified value.
         (pcase non-nil
